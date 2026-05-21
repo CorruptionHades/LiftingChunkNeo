@@ -15,3 +15,7 @@ This is a mod recreating BastiGHG's (latest) [challenge](https://www.youtube.com
 `/liftingchunks stop` - Stop the challenge.
 
 `/liftingchunks pause` - Pause the challenge.
+
+### Todo:
+- implement nether and end
+- config system
