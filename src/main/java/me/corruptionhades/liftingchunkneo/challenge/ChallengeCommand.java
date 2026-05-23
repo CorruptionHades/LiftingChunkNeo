@@ -3,6 +3,7 @@ package me.corruptionhades.liftingchunkneo.challenge;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -26,6 +27,10 @@ public class ChallengeCommand {
                         .executes(ctx -> toggleDebug(ctx.getSource())))
                 .then(LiteralArgumentBuilder.<CommandSourceStack>literal("forcelift")
                         .executes(ctx -> forceLift(ctx.getSource())))
+                .then(LiteralArgumentBuilder.<CommandSourceStack>literal("test_friction")
+                        .executes(ctx -> testFriction(ctx.getSource()))
+                        .then(Commands.argument("size", IntegerArgumentType.integer(2))
+                                .executes(ctx -> testFrictionWithSize(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "size")))))
                 .then(Commands.literal("debug_force")
                         .then(Commands.argument("yForce", DoubleArgumentType.doubleArg())
                                 .executes(ctx -> applyDebugForce(ctx.getSource(), DoubleArgumentType.getDouble(ctx, "yForce")))))
@@ -120,6 +125,32 @@ public class ChallengeCommand {
         ServerPlayer player = source.getPlayer();
         if (player != null) {
             ChallengeManager.getInstance().triggerChunkLift(player);
+        }
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int testFriction(CommandSourceStack source) {
+        if (!source.isPlayer()) {
+            source.sendFailure(Component.literal("§cOnly players can use this command"));
+            return 0;
+        }
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            ChallengeManager.getInstance().testFriction(player);
+            source.sendSuccess(() -> Component.literal("§aCreated test friction pad and sublevel (default size=4)."), true);
+        }
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int testFrictionWithSize(CommandSourceStack source, int size) {
+        if (!source.isPlayer()) {
+            source.sendFailure(Component.literal("§cOnly players can use this command"));
+            return 0;
+        }
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            ChallengeManager.getInstance().testFriction(player, size);
+            source.sendSuccess(() -> Component.literal("§aCreated test friction pad and sublevel (size=" + size + ")."), true);
         }
         return Command.SINGLE_SUCCESS;
     }

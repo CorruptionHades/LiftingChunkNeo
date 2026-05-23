@@ -7,13 +7,16 @@ import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import org.joml.Vector3d;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 public class SublevelObserver {
 
-    private boolean observerRegistered = false;
+    private final Set<ServerLevel> registered = new HashSet<>();
     private boolean ignoreNextSpawn = false;
 
     public void ignoreNext() {
@@ -21,8 +24,8 @@ public class SublevelObserver {
     }
 
     public void registerSplitObserver(ServerLevel level) {
-        if (observerRegistered) return;
-        observerRegistered = true;
+        if (registered.contains(level)) return;
+        registered.add(level);
 
         SubLevelContainer container = SubLevelContainer.getContainer(level);
         if (container == null) return;
@@ -49,14 +52,22 @@ public class SublevelObserver {
 
                 Settings.LOG_DEBUG(level, "Detected sublevel spawn: " + subLevel.getUniqueId());
 
-
                 RigidBodyHandle handle = RigidBodyHandle.of(serverSubLevel);
+                if (handle == null) return;
 
-                // 0.5 - 3
+                // 0.5 - 3 magnitude
                 double vertMoment = 0.5 + Math.random() * 2.5;
 
+                // choose vertical direction based on the level
+                int sign = 1;
+                ServerLevel subLevelLevel = serverSubLevel.getLevel();
+                if (subLevelLevel != null) {
+                    MinecraftServerWrapper msw = new MinecraftServerWrapper(subLevelLevel.getServer());
+                    sign = msw.getVerticalSignForLevel(subLevelLevel);
+                }
+
                 handle.addLinearAndAngularVelocity(
-                        new Vector3d(0, vertMoment, 0),
+                        new Vector3d(0, vertMoment * sign, 0),
                         new Vector3d(
                                 (Math.random() - 0.5) * 0.4,
                                 (Math.random() - 0.5) * 0.4,
@@ -89,7 +100,7 @@ public class SublevelObserver {
                     maxZ = parentChunk.maxZ;
                 }
 
-                double splitSpeed = parentChunk != null ? parentChunk.speed + vertMoment : vertMoment;
+                double splitSpeed = (parentChunk != null ? parentChunk.speed : 0) + vertMoment * sign;
                 LiftedChunk splitChunk = new LiftedChunk(
                         serverSubLevel,
                         BlockPos.containing(serverSubLevel.logicalPose().position().x(), serverSubLevel.logicalPose().position().y(), serverSubLevel.logicalPose().position().z()),
@@ -104,5 +115,18 @@ public class SublevelObserver {
                 Settings.LOG_DEBUG(level, "Split chunk added: " + splitChunk.subLevel.getUniqueId() + " with speed " + splitChunk.speed);
             }
         });
+    }
+
+    // small helper wrapper to avoid importing MinecraftServer directly in this file everywhere
+    private static class MinecraftServerWrapper {
+        private final net.minecraft.server.MinecraftServer server;
+        MinecraftServerWrapper(net.minecraft.server.MinecraftServer s) { this.server = s; }
+
+        int getVerticalSignForLevel(ServerLevel level) {
+            if (level == server.overworld()) return 1;
+            if (level == server.getLevel(Level.NETHER)) return -1;
+            if (level == server.getLevel(Level.END)) return Math.random() < 0.5 ? 1 : -1;
+            return 1;
+        }
     }
 }

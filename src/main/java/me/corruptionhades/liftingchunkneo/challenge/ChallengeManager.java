@@ -20,8 +20,10 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import org.joml.Vector3d;
+import net.minecraft.world.level.Level;
 
 import java.util.*;
+import net.minecraft.world.level.block.Blocks;
 
 public class ChallengeManager {
 
@@ -86,7 +88,10 @@ public class ChallengeManager {
     public void tick(MinecraftServer server) {
         if (state != ChallengeState.ACTIVE) return;
 
+        // register observer for overworld, nether and end (if present)
         observer.registerSplitObserver(server.overworld());
+        if (server.getLevel(Level.NETHER) != null) observer.registerSplitObserver(server.getLevel(Level.NETHER));
+        if (server.getLevel(Level.END) != null) observer.registerSplitObserver(server.getLevel(Level.END));
 
         tickLiftedChunks(server);
         tickPlayers(server);
@@ -243,7 +248,15 @@ public class ChallengeManager {
         if (existing != null) return;
 
         BlockPos playerPos = player.blockPosition();
-        double speed = 1.0 + Math.random() * 6.0;
+        double baseSpeed = 1.0 + Math.random() * 6.0;
+
+        // choose vertical direction based on dimension: overworld up, nether down, end random
+        MinecraftServer server = player.getServer();
+        int sign = 1;
+        if (level == server.getLevel(Level.NETHER)) sign = -1;
+        else if (level == server.getLevel(Level.END)) sign = Math.random() < 0.5 ? 1 : -1;
+
+        double speed = baseSpeed * sign;
 
         for (int x = chunkPos.getMinBlockX(); x <= chunkPos.getMaxBlockX(); x++) {
             for (int z = chunkPos.getMinBlockZ(); z <= chunkPos.getMaxBlockZ(); z++) {
@@ -269,7 +282,14 @@ public class ChallengeManager {
         try {
             observer.ignoreNext();
 
-            ServerSubLevel subLevel = SubLevelAssemblyHelper.assembleBlocks(level, playerPos, blocks, bounds);
+            // anchor in middle of chunk
+            BlockPos anchor = new BlockPos(
+                    (bounds.minX + bounds.maxX) / 2,
+                    playerPos.getY(),
+                    (bounds.minZ + bounds.maxZ) / 2
+            );
+
+            ServerSubLevel subLevel = SubLevelAssemblyHelper.assembleBlocks(level, anchor, blocks, bounds);
 
             RigidBodyHandle handle = RigidBodyHandle.of(subLevel);
             if (handle != null) {
@@ -350,10 +370,116 @@ public class ChallengeManager {
                 .min(Comparator.comparingDouble(lc -> lc.anchor.distSqr(pp)))
                 .ifPresent(lc -> {
                     lc.hasReachedLimit = false;
-                    lc.speed = force;
+                    double sign = lc.speed == 0 ? 1.0 : Math.signum(lc.speed);
+                    lc.speed = force * sign;
                     player.displayClientMessage(
                             Component.literal("§aForced chunk to ascend at " + force + " m/s"), false);
                 });
+    }
+
+    /**
+     * Create a 4x4 stone pad centered on the player and make the middle 2x3 region into a sublevel
+     * for friction/sticking testing.
+     */
+    public void testFriction(ServerPlayer player) {
+        testFriction(player, 4);
+    }
+
+    /**
+     * Create a NxNxN cube (perimeter) with a 1-block-thick border and make a centered
+     * inner sublevel that "floats" one block above the bottom border.
+     * For a given perimeter size N (N >= 2) the inner sublevel dimensions will be:
+     *   innerX = N - 2, innerZ = N - 2, innerY = N - 1
+     * (clamped to fit for very small N). Example: N=4 -> outer=4x4x4, inner=2x2x3; N=8 -> outer=8x8x8, inner=6x6x7
+     */
+    public void testFriction(ServerPlayer player, int perimeterSize) {
+        if (perimeterSize < 2) perimeterSize = 2;
+
+        ServerLevel level = (ServerLevel) player.getCommandSenderWorld();
+        BlockPos p = player.blockPosition();
+        int px = p.getX();
+        int py = p.getY() - 1; // top of cube at feet level
+        int pz = p.getZ();
+
+        // compute cube bounds such that behavior matches previous default for even sizes
+        int half = perimeterSize / 2;
+        int cubeMinX = px - half + (perimeterSize % 2 == 0 ? 1 : 0);
+        int cubeMinZ = pz - half + (perimeterSize % 2 == 0 ? 1 : 0);
+        int cubeMinY = py - perimeterSize + 1;
+        int cubeMaxX = cubeMinX + perimeterSize - 1;
+        int cubeMaxZ = cubeMinZ + perimeterSize - 1;
+        int cubeMaxY = py;
+
+        for (int x = cubeMinX; x <= cubeMaxX; x++) {
+            for (int z = cubeMinZ; z <= cubeMaxZ; z++) {
+                for (int y = cubeMinY; y <= cubeMaxY; y++) {
+                    level.setBlock(new BlockPos(x, y, z), Blocks.STONE.defaultBlockState(), 3);
+                }
+            }
+        }
+
+        // inner sublevel: 1-block-thick border -> inner lies between cubeMin+1 .. cubeMax-1
+        int innerMinX = cubeMinX + 1;
+        int innerMaxX = cubeMaxX - 1;
+        int innerMinZ = cubeMinZ + 1;
+        int innerMaxZ = cubeMaxZ - 1;
+        // float inner one block above bottom border, top aligns with cube top
+        int innerMinY = cubeMinY + 1;
+        int innerMaxY = cubeMaxY;
+
+        // Clamp: if perimeter is too small such that inner bounds invert, fall back to using full cube
+        if (innerMinX > innerMaxX) {
+            innerMinX = cubeMinX;
+            innerMaxX = cubeMaxX;
+        }
+        if (innerMinZ > innerMaxZ) {
+            innerMinZ = cubeMinZ;
+            innerMaxZ = cubeMaxZ;
+        }
+        if (innerMinY > innerMaxY) {
+            innerMinY = cubeMinY;
+            innerMaxY = cubeMaxY;
+        }
+
+        Set<BlockPos> blocks = new HashSet<>();
+        for (int x = innerMinX; x <= innerMaxX; x++) {
+            for (int z = innerMinZ; z <= innerMaxZ; z++) {
+                for (int y = innerMinY; y <= innerMaxY; y++) {
+                    blocks.add(new BlockPos(x, y, z));
+                }
+            }
+        }
+
+        BoundingBox3i bounds = new BoundingBox3i(innerMinX, innerMinY, innerMinZ, innerMaxX, innerMaxY, innerMaxZ);
+        BlockPos anchor = new BlockPos((innerMinX + innerMaxX) / 2, (innerMinY + innerMaxY) / 2, (innerMinZ + innerMaxZ) / 2);
+
+        try {
+            observer.ignoreNext();
+
+            ServerSubLevel subLevel = SubLevelAssemblyHelper.assembleBlocks(level, anchor, blocks, bounds);
+
+            RigidBodyHandle handle = RigidBodyHandle.of(subLevel);
+            double initSpeed = 2.0;
+            if (handle != null) {
+                // choose vertical sign by dimension
+                int sign = 1;
+                MinecraftServer srv = level.getServer();
+                if (level == srv.getLevel(Level.NETHER)) sign = -1;
+                else if (level == srv.getLevel(Level.END)) sign = Math.random() < 0.5 ? 1 : -1;
+
+                handle.addLinearAndAngularVelocity(
+                        new Vector3d(0, initSpeed * sign, 0),
+                        new Vector3d((Math.random() - 0.5) * 0.4, 0, (Math.random() - 0.5) * 0.4)
+                );
+            }
+
+            LiftedChunk lc = new LiftedChunk(subLevel, anchor, initSpeed, innerMinX, innerMaxX, innerMinY, innerMaxY, innerMinZ, innerMaxZ);
+            allLiftedChunks.add(lc);
+
+            Settings.LOG_DEBUG(level, "Test friction: created sublevel " + subLevel.getUniqueId() + " perimeter=" + perimeterSize);
+        } catch (Exception e) {
+            Sable.LOGGER.error("LiftingChunks: failed to create test friction sublevel", e);
+        }
     }
 
 
